@@ -1,4 +1,5 @@
 from itertools import islice
+from multiprocessing import Process
 
 import h5py
 import numpy as np
@@ -678,6 +679,16 @@ def test_open_file(mock_sa3_control_data):
     else:
         assert 'METADATA/dataSources/dataSourceId' in file_access.file
 
+
+def open_run_daemonized_helper(path):
+    RunDirectory(path, parallelize=False)
+
+def test_open_run_daemonized(mock_fxe_raw_run):
+    p = Process(target=open_run_daemonized_helper, args=(mock_fxe_raw_run,), daemon=True)
+    p.start()
+    p.join()
+
+    assert p.exitcode == 0
 
 @pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0,
                     reason="cannot run permission tests as root")

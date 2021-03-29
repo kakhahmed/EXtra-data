@@ -115,7 +115,7 @@ class DataCollection:
             return osp.basename(path), fa
 
     @classmethod
-    def from_paths(cls, paths, _files_map=None):
+    def from_paths(cls, paths, _files_map=None, parallelize=True):
         files = []
         uncached = []
         for path in paths:
@@ -135,16 +135,24 @@ class DataCollection:
                 # prevent child processes from receiving KeyboardInterrupt
                 signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-            # cpu_affinity give a list of cpu cores we can use, can be all or a
-            # subset of the cores the machine has.
-            nproc = min(len(psutil.Process().cpu_affinity()), len(uncached))
-            with Pool(processes=nproc, initializer=initializer) as pool:
-                for fname, fa in pool.imap_unordered(cls._open_file, uncached):
-                    if isinstance(fa, FileAccess):
-                        files.append(fa)
-                    else:
-                        print(f"Skipping file {fname}", file=sys.stderr)
-                        print(f"  (error was: {fa})", file=sys.stderr)
+            def handle_open_file_attempt(fname, fa):
+                if isinstance(fa, FileAccess):
+                    files.append(fa)
+                else:
+                    print(f"Skipping file {fname}", file=sys.stderr)
+                    print(f"  (error was: {fa})", file=sys.stderr)
+
+            # Open the files either in parallel or serially
+            if parallelize:
+                # cpu_affinity give a list of cpu cores we can use, can be all or a
+                # subset of the cores the machine has.
+                nproc = min(len(psutil.Process().cpu_affinity()), len(uncached))
+                with Pool(processes=nproc, initializer=initializer) as pool:
+                    for fname, fa in pool.imap_unordered(cls._open_file, uncached):
+                        handle_open_file_attempt(fname, fa)
+            else:
+                for path in uncached:
+                    handle_open_file_attempt(*cls._open_file(path))
 
         if not files:
             raise Exception("All HDF5 files specified are unusable")
@@ -1215,7 +1223,7 @@ def H5File(path):
     return DataCollection.from_path(path)
 
 
-def RunDirectory(path, include='*', file_filter=locality.lc_any):
+def RunDirectory(path, include='*', file_filter=locality.lc_any, parallelize=True):
     """Open data files from a 'run' at European XFEL.
 
     ::
@@ -1236,6 +1244,10 @@ def RunDirectory(path, include='*', file_filter=locality.lc_any):
     file_filter: callable
         Function to subset the list of filenames to open.
         Meant to be used with functions in the extra_data.locality module.
+    parallelize: bool
+        Enable or disable loading files in parallel. Particularly useful if
+        creating child processes is not allowed (e.g. in a daemonized
+        :class:`multiprocessing.Process`).
     """
     files = [f for f in os.listdir(path) if f.endswith('.h5')]
     files = [osp.join(path, f) for f in fnmatch.filter(files, include)]
@@ -1245,7 +1257,7 @@ def RunDirectory(path, include='*', file_filter=locality.lc_any):
 
     files_map = RunFilesMap(path)
     t0 = time.monotonic()
-    d = DataCollection.from_paths(files, files_map)
+    d = DataCollection.from_paths(files, files_map, parallelize)
     log.debug("Opened run with %d files in %.2g s",
               len(d.files), time.monotonic() - t0)
     files_map.save(d.files)
